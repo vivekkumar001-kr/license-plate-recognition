@@ -85,6 +85,54 @@ Or in one shot: `python scripts/train_all.py`.
 
 ---
 
+## Error analysis: two bugs that only end-to-end testing could find
+
+Both of these were invisible to unit tests and to the component benchmark.
+They are documented here because *how* a system fails is more informative
+than its headline accuracy.
+
+### 1. Train/serve preprocessing mismatch
+
+The embedder benchmark reported **98.75% top-1**. The full pipeline on the
+same model scored **0/6**.
+
+The benchmark fed the embedder tight `render_plate` crops for both gallery
+and probe. The real pipeline feeds it whatever the *detector* returns: a box
+roughly 10-25% too large, slightly offset, with background in the corners
+(measured IoU against ground truth around 0.6). Isolating the stages:
+
+| Probe source | Top-1 | Genuine cosine similarity |
+|---|---|---|
+| Tight crop (what the benchmark measured) | 58.3% | 0.990 |
+| Ground-truth oracle box | 66.7% | 0.990 |
+| **Actual detector box** | **33.3%** | **0.661** |
+
+The model had never seen an imperfectly-framed plate, so it had no reason to
+be invariant to framing. Fix: `jitter_crop` in `data/synth_plates.py`
+simulates detector box error during training (random shift and scale over
+synthesised background), and the benchmark now jitters both gallery and
+probes so it measures the deployed condition rather than a laboratory one.
+
+> The general lesson: **evaluate the pipeline, not the layer.** A component
+> benchmark that constructs its own inputs is measuring a distribution that
+> does not exist at inference time.
+
+### 2. An uncalibrated acceptance threshold
+
+The default `accept_threshold = 0.62` was a guess. The ROC curve on held-out
+identities put the optimal cut-off near **0.89** — so impostors scoring
+0.70-0.80 were being *accepted*, producing confident wrong answers rather
+than an honest `UNKNOWN`.
+
+Fix: `train_embedder` computes the Youden-optimal threshold on
+identity-disjoint validation data and **stores it inside the checkpoint**.
+`build_pipeline` reads it back, so the operating point can never drift away
+from the weights it was measured for. An explicit `MatchConfig` still
+overrides it, because an operator choosing a deliberate false-accept budget
+must always win.
+
+---
+
 ## Design decisions worth defending
 
 **One pipeline, two domains.** Plates and faces differ only in which detector,

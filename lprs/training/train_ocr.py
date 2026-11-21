@@ -83,6 +83,10 @@ def train_ocr(
         samples_per_identity=views_per_plate,
         severity=severity,
         seed=seed,
+        # Gentler than the embedder's jitter: a crop that clips a character
+        # would hand CTC a label it cannot possibly justify.
+        jitter_shift=0.05,
+        jitter_scale=0.18,
     )
 
     order = list(range(len(images)))

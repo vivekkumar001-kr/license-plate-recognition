@@ -58,6 +58,10 @@ class EmbeddingNet(nn.Module):
         super().__init__()
         self.config = config or EmbedderConfig()
         self.in_channels = in_channels
+        #: Cosine threshold calibrated on validation data at training time.
+        #: Shipping it inside the checkpoint means the operating point can
+        #: never drift away from the weights it was measured for.
+        self.recommended_threshold: float | None = None
 
         blocks: list[nn.Module] = []
         previous = in_channels
@@ -80,14 +84,17 @@ class EmbeddingNet(nn.Module):
 
     # -- persistence -------------------------------------------------------
 
-    def save(self, path: str | Path) -> None:
+    def save(self, path: str | Path, accept_threshold: float | None = None) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        if accept_threshold is not None:
+            self.recommended_threshold = float(accept_threshold)
         torch.save(
             {
                 "state_dict": self.state_dict(),
                 "in_channels": self.in_channels,
                 "config": vars(self.config),
+                "recommended_threshold": self.recommended_threshold,
             },
             path,
         )
@@ -98,6 +105,7 @@ class EmbeddingNet(nn.Module):
         config = EmbedderConfig(**payload["config"])
         model = cls(in_channels=payload["in_channels"], config=config)
         model.load_state_dict(payload["state_dict"])
+        model.recommended_threshold = payload.get("recommended_threshold")
         model.eval()
         return model
 
@@ -124,6 +132,11 @@ class TorchEmbedder(Embedder):
     @property
     def embedding_dim(self) -> int:
         return self.model.config.embedding_dim
+
+    @property
+    def recommended_threshold(self) -> float | None:
+        """Validation-calibrated cosine threshold, if the checkpoint has one."""
+        return self.model.recommended_threshold
 
     @torch.no_grad()
     def embed(self, batch: np.ndarray) -> np.ndarray:

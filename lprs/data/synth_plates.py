@@ -27,6 +27,7 @@ __all__ = [
     "random_plate_text",
     "render_plate",
     "augment_plate",
+    "jitter_crop",
     "compose_scene",
     "generate_identity_dataset",
 ]
@@ -201,6 +202,55 @@ def augment_plate(
     return result
 
 
+def jitter_crop(
+    image: np.ndarray,
+    rng: random.Random,
+    max_shift: float = 0.10,
+    max_scale: float = 0.22,
+) -> np.ndarray:
+    """Re-crop the plate with a random offset and scale, over background.
+
+    This is the single most important augmentation in the whole project. A
+    detector never returns the perfect box -- it returns something 10-25% too
+    large, slightly offset, with asphalt in the corners. An embedder trained
+    only on pristine tight crops is therefore being asked at inference time
+    for a kind of image it has literally never seen, and its accuracy
+    collapses (measured: genuine cosine similarity 0.99 -> 0.66).
+
+    Simulating that box imprecision during training makes the embedding
+    invariant to it, which is exactly what face-recognition and person-re-id
+    pipelines do with random-resized-crop.
+    """
+    height, width = image.shape[:2]
+
+    # Surround the plate with plausible background so the jittered box has
+    # something realistic to include at the edges.
+    pad_x = int(width * (max_scale + max_shift) + 2)
+    pad_y = int(height * (max_scale + max_shift) + 2)
+    generator = np.random.default_rng(rng.randrange(2**32))
+    canvas = generator.integers(
+        55, 165, size=(height + 2 * pad_y, width + 2 * pad_x, 3), dtype=np.int16
+    ).astype(np.uint8)
+    canvas = cv2.GaussianBlur(canvas, (7, 7), 0)
+    canvas[pad_y : pad_y + height, pad_x : pad_x + width] = image
+
+    grow_x = rng.uniform(-max_scale * 0.35, max_scale)
+    grow_y = rng.uniform(-max_scale * 0.35, max_scale)
+    shift_x = rng.uniform(-max_shift, max_shift)
+    shift_y = rng.uniform(-max_shift, max_shift)
+
+    left = int(pad_x + width * (shift_x - grow_x / 2))
+    top = int(pad_y + height * (shift_y - grow_y / 2))
+    box_width = int(width * (1 + grow_x))
+    box_height = int(height * (1 + grow_y))
+
+    left = max(0, min(left, canvas.shape[1] - 2))
+    top = max(0, min(top, canvas.shape[0] - 2))
+    box_width = max(8, min(box_width, canvas.shape[1] - left))
+    box_height = max(8, min(box_height, canvas.shape[0] - top))
+    return canvas[top : top + box_height, left : left + box_width]
+
+
 def compose_scene(
     plate: np.ndarray,
     rng: random.Random,
@@ -235,11 +285,19 @@ def generate_identity_dataset(
     severity: float = 0.6,
     seed: int = 1337,
     output_dir: Path | None = None,
+    crop_jitter: bool = True,
+    jitter_shift: float = 0.10,
+    jitter_scale: float = 0.22,
 ) -> tuple[list[np.ndarray], list[str]]:
     """Produce ``num_identities`` plates, each seen ``samples_per_identity`` times.
 
     This is the structure a metric-learning model needs: multiple degraded
     views of the same identity so triplet loss has positives to pull together.
+
+    ``crop_jitter`` simulates imperfect detector boxes and should stay on for
+    anything that will later be fed real detections -- see :func:`jitter_crop`.
+    Transcription training wants gentler values than matching, because a crop
+    that clips a character turns into a mislabelled training example.
     """
     rng = random.Random(seed)
     styles = PlateStyle.palette()
@@ -257,7 +315,10 @@ def generate_identity_dataset(
         style = rng.choice(styles)
         clean = render_plate(text, style)
         for _ in range(samples_per_identity):
-            images.append(augment_plate(clean, rng, severity))
+            sample = augment_plate(clean, rng, severity)
+            if crop_jitter:
+                sample = jitter_crop(sample, rng, jitter_shift, jitter_scale)
+            images.append(sample)
             labels.append(text)
 
     if output_dir is not None:

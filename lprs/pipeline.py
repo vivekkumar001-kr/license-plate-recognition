@@ -287,6 +287,13 @@ def build_pipeline(
         device=device,
     )
 
+    # A checkpoint carries the threshold that was calibrated against it on
+    # validation data. Prefer that over the generic default, because the right
+    # cut-off is a property of the embedding space, not a universal constant.
+    calibrated = getattr(embedder, "recommended_threshold", None)
+    if match_config is None and calibrated is not None:
+        match_config = MatchConfig(accept_threshold=float(calibrated))
+
     transcriber = None
     if domain == "plate":
         ocr_path = Path(ocr_checkpoint) if ocr_checkpoint else ARTIFACT_DIR / "ocr_crnn.pt"

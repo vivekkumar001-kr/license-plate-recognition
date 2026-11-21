@@ -20,6 +20,7 @@ from ..config import ARTIFACT_DIR, MatchConfig, PlateGeometry, PreprocessConfig
 from ..data.synth_plates import (
     augment_plate,
     compose_scene,
+    jitter_crop,
     random_plate_text,
     render_plate,
 )
@@ -55,7 +56,12 @@ def _make_gallery_and_probes(
     severity: float,
     seed: int,
 ) -> tuple[list[np.ndarray], list[str], list[np.ndarray], list[str]]:
-    """Build disjoint enrolment and probe sets for the same identities."""
+    """Build disjoint enrolment and probe sets for the same identities.
+
+    Both sets get crop jitter, because in deployment both the enrolment image
+    and the probe arrive through a detector. Measuring on pristine tight crops
+    would overstate accuracy by a wide margin.
+    """
     rng = random.Random(seed)
     enrol_images: list[np.ndarray] = []
     enrol_labels: list[str] = []
@@ -71,10 +77,12 @@ def _make_gallery_and_probes(
 
         clean = render_plate(text)
         for _ in range(enrol_per_identity):
-            enrol_images.append(augment_plate(clean, rng, severity * 0.5))
+            enrol_images.append(
+                jitter_crop(augment_plate(clean, rng, severity * 0.5), rng)
+            )
             enrol_labels.append(text)
         for _ in range(probes_per_identity):
-            probe_images.append(augment_plate(clean, rng, severity))
+            probe_images.append(jitter_crop(augment_plate(clean, rng, severity), rng))
             probe_labels.append(text)
 
     return enrol_images, enrol_labels, probe_images, probe_labels
@@ -228,7 +236,9 @@ def benchmark_ocr(
         truths: list[str] = []
         for _ in range(num_plates):
             text = random_plate_text(rng)
-            images.append(augment_plate(render_plate(text), rng, severity))
+            images.append(
+                jitter_crop(augment_plate(render_plate(text), rng, severity), rng, 0.05, 0.18)
+            )
             truths.append(text)
 
         batch = preprocessor.batch(images)

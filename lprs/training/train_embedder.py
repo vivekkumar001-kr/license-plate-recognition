@@ -184,7 +184,9 @@ def train_embedder(
 
         if verification.roc_auc > best_auc:
             best_auc = verification.roc_auc
-            model.save(output_path)
+            # Persist the operating point alongside the weights it was
+            # measured for, so the two can never drift apart.
+            model.save(output_path, accept_threshold=verification.best_threshold)
 
     result.final_metrics = {
         "best_val_roc_auc": best_auc,

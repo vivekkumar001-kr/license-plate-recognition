@@ -9,6 +9,7 @@ from .synth_plates import (
     augment_plate,
     compose_scene,
     generate_identity_dataset,
+    jitter_crop,
     random_plate_text,
     render_plate,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "collate_ctc",
     "compose_scene",
     "generate_identity_dataset",
+    "jitter_crop",
     "load_image",
     "load_image_folder",
     "random_plate_text",

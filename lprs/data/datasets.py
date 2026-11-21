@@ -20,18 +20,59 @@ from ..preprocess import Preprocessor
 __all__ = ["ImageLabelDataset", "CTCPlateDataset", "PKSampler", "collate_ctc"]
 
 
-class ImageLabelDataset(Dataset):
-    """Preprocessed crops paired with integer identity indices.
+class _PreprocessedImages:
+    """Shared preprocessing cache for the dataset classes.
 
-    Preprocessing happens lazily in ``__getitem__`` so that augmented copies
-    of a 20k-image dataset never all live in memory at once.
+    Augmentation happens once, at *generation* time, so preprocessing a given
+    image is deterministic -- recomputing CLAHE, a bilateral filter and a
+    deskew on every epoch is pure waste. Doing it once up front made training
+    several times faster; the cost is roughly 30 KB per crop of RAM.
+
+    Set ``precompute=False`` for datasets too large to hold in memory.
     """
+
+    def __init__(
+        self,
+        images: list[np.ndarray],
+        preprocessor: Preprocessor,
+        precompute: bool,
+    ) -> None:
+        self.images = images
+        self.preprocessor = preprocessor
+        self._cache: np.ndarray | None = None
+        if precompute and images:
+            self._cache = np.stack([self._compute(index) for index in range(len(images))])
+
+    def _compute(self, index: int) -> np.ndarray:
+        processed = self.preprocessor.run(self.images[index])
+        return processed[:, :, None] if processed.ndim == 2 else processed
+
+    def __len__(self) -> int:
+        return len(self.images)
+
+    def tensor(self, index: int) -> torch.Tensor:
+        processed = self._cache[index] if self._cache is not None else self._compute(index)
+        return torch.from_numpy(
+            np.ascontiguousarray(processed.transpose(2, 0, 1), dtype=np.float32)
+        )
+
+    @property
+    def channels(self) -> int:
+        if not self.images:
+            return 1
+        sample = self._cache[0] if self._cache is not None else self._compute(0)
+        return int(sample.shape[2])
+
+
+class ImageLabelDataset(Dataset):
+    """Preprocessed crops paired with integer identity indices."""
 
     def __init__(
         self,
         images: list[np.ndarray],
         labels: list[str],
         preprocessor: Preprocessor,
+        precompute: bool = True,
     ) -> None:
         if len(images) != len(labels):
             raise ValueError(f"Got {len(images)} images but {len(labels)} labels")
@@ -39,6 +80,8 @@ class ImageLabelDataset(Dataset):
         self.images = images
         self.labels = labels
         self.preprocessor = preprocessor
+        self._data = _PreprocessedImages(images, preprocessor, precompute)
+
         self.classes = sorted(set(labels))
         self.class_to_index = {label: index for index, label in enumerate(self.classes)}
         self.targets = [self.class_to_index[label] for label in labels]
@@ -47,13 +90,7 @@ class ImageLabelDataset(Dataset):
         return len(self.images)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
-        processed = self.preprocessor.run(self.images[index])
-        if processed.ndim == 2:
-            processed = processed[:, :, None]
-        tensor = torch.from_numpy(
-            np.ascontiguousarray(processed.transpose(2, 0, 1), dtype=np.float32)
-        )
-        return tensor, self.targets[index]
+        return self._data.tensor(index), self.targets[index]
 
     @property
     def num_classes(self) -> int:
@@ -61,8 +98,7 @@ class ImageLabelDataset(Dataset):
 
     @property
     def channels(self) -> int:
-        sample = self.preprocessor.run(self.images[0])
-        return 1 if sample.ndim == 2 else sample.shape[2]
+        return self._data.channels
 
 
 class CTCPlateDataset(Dataset):
@@ -73,25 +109,21 @@ class CTCPlateDataset(Dataset):
         images: list[np.ndarray],
         texts: list[str],
         preprocessor: Preprocessor,
+        precompute: bool = True,
     ) -> None:
         if len(images) != len(texts):
             raise ValueError(f"Got {len(images)} images but {len(texts)} texts")
         self.images = images
         self.texts = texts
         self.preprocessor = preprocessor
+        self._data = _PreprocessedImages(images, preprocessor, precompute)
+        self._targets = [torch.tensor(encode_text(text), dtype=torch.long) for text in texts]
 
     def __len__(self) -> int:
         return len(self.images)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
-        processed = self.preprocessor.run(self.images[index])
-        if processed.ndim == 2:
-            processed = processed[:, :, None]
-        image = torch.from_numpy(
-            np.ascontiguousarray(processed.transpose(2, 0, 1), dtype=np.float32)
-        )
-        target = torch.tensor(encode_text(self.texts[index]), dtype=torch.long)
-        return image, target
+        return self._data.tensor(index), self._targets[index]
 
 
 class PKSampler(Sampler[int]):

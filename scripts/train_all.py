@@ -20,11 +20,11 @@ def main() -> None:
     print("STAGE 1/2  FaceNet-style embedder (batch-hard triplet loss)")
     print("=" * 70)
     embedder_result = train_embedder(
-        num_identities=180,
-        samples_per_identity=10,
-        epochs=16,
+        num_identities=220,
+        samples_per_identity=12,
+        epochs=20,
         severity=0.6,
-        identities_per_batch=12,
+        identities_per_batch=14,
         samples_per_batch_identity=4,
     )
 
@@ -33,9 +33,9 @@ def main() -> None:
     print("STAGE 2/2  CRNN + BiLSTM + CTC transcriber")
     print("=" * 70)
     ocr_result = train_ocr(
-        num_plates=2400,
+        num_plates=6000,
         views_per_plate=2,
-        epochs=16,
+        epochs=24,
         severity=0.55,
     )
 
