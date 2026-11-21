@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+.env.*
+
+# Model artifacts & generated data (regenerate with `lprs synth` / `lprs train-*`)
+artifacts/
+data/synthetic/
+data/raw/
+*.pt
+*.pth
+*.onnx
+
+# Reports
+reports/*.png
+reports/*.html
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Never commit personal imagery or enrolment galleries (may contain PII/biometrics)
+data/enrolled/
+data/private/
+*.gallery.npz

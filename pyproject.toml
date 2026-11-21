@@ -1,0 +1,37 @@
+[project]
+name = "lprs"
+version = "0.1.0"
+description = "License Plate Recognition System - OpenCV detection, CNN/FaceNet-style embeddings, preprocessing and similarity matching"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    # OpenCV 5.x removed CascadeClassifier, HOGDescriptor and the bundled
+    # haarcascade XML files. This project depends on all three.
+    "opencv-python>=4.9,<5",
+    "pillow",
+    "scikit-learn",
+    "torch",
+    "matplotlib",
+    "fastapi",
+    "uvicorn",
+    "jinja2",
+    "python-multipart",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+lprs = "lprs.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["lprs*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
