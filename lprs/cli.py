@@ -34,6 +34,17 @@ def _print_json(payload) -> None:
     print(json.dumps(payload, indent=2, default=str))
 
 
+def _match_config(args: argparse.Namespace) -> MatchConfig | None:
+    """Build a MatchConfig only when the user actually asked for a threshold.
+
+    Returning None lets the pipeline fall back to the value calibrated at
+    training time and stored in the checkpoint, which beats any constant we
+    could bake into an argparse default.
+    """
+    threshold = getattr(args, "threshold", None)
+    return None if threshold is None else MatchConfig(accept_threshold=threshold)
+
+
 # --------------------------------------------------------------------------
 # Commands
 # --------------------------------------------------------------------------
@@ -104,7 +115,7 @@ def command_enrol(args: argparse.Namespace) -> int:
         domain=args.domain,
         embedder_kind=args.embedder,
         gallery_path=args.gallery if args.append else None,
-        match_config=MatchConfig(accept_threshold=args.threshold),
+        match_config=_match_config(args),
     )
     images, labels = load_image_folder(args.source)
     accepted = pipeline.enrol_batch(labels, images, detect_first=args.detect)
@@ -121,7 +132,7 @@ def command_enrol_synthetic(args: argparse.Namespace) -> int:
     pipeline = build_pipeline(
         domain="plate",
         embedder_kind=args.embedder,
-        match_config=MatchConfig(accept_threshold=args.threshold),
+        match_config=_match_config(args),
     )
     images, labels = generate_identity_dataset(
         num_identities=args.identities,
@@ -141,7 +152,7 @@ def command_recognise(args: argparse.Namespace) -> int:
         domain=args.domain,
         embedder_kind=args.embedder,
         gallery_path=args.gallery,
-        match_config=MatchConfig(accept_threshold=args.threshold),
+        match_config=_match_config(args),
     )
     image = load_image(args.image)
     results = pipeline.recognise(image, max_regions=args.max_regions, top_k=args.top_k)
@@ -291,7 +302,8 @@ def build_parser() -> argparse.ArgumentParser:
     enrol.add_argument("--domain", choices=("plate", "face"), default="plate")
     enrol.add_argument("--embedder", choices=("cnn", "hog", "raw"), default="cnn")
     enrol.add_argument("--gallery", default=str(ARTIFACT_DIR / "gallery.npz"))
-    enrol.add_argument("--threshold", type=float, default=0.62)
+    enrol.add_argument("--threshold", type=float, default=None,
+                       help="override the threshold calibrated during training")
     enrol.add_argument("--detect", action="store_true", help="detect before enrolling")
     enrol.add_argument("--append", action="store_true", help="add to an existing gallery")
     enrol.set_defaults(handler=command_enrol)
@@ -303,7 +315,8 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--samples", type=int, default=5)
     demo.add_argument("--embedder", choices=("cnn", "hog", "raw"), default="cnn")
     demo.add_argument("--gallery", default=str(ARTIFACT_DIR / "gallery.npz"))
-    demo.add_argument("--threshold", type=float, default=0.62)
+    demo.add_argument("--threshold", type=float, default=None,
+                      help="override the threshold calibrated during training")
     demo.add_argument("--seed", type=int, default=99)
     demo.set_defaults(handler=command_enrol_synthetic)
 
@@ -312,7 +325,8 @@ def build_parser() -> argparse.ArgumentParser:
     recognise.add_argument("--domain", choices=("plate", "face"), default="plate")
     recognise.add_argument("--embedder", choices=("cnn", "hog", "raw"), default="cnn")
     recognise.add_argument("--gallery", default=str(ARTIFACT_DIR / "gallery.npz"))
-    recognise.add_argument("--threshold", type=float, default=0.62)
+    recognise.add_argument("--threshold", type=float, default=None,
+                           help="override the threshold calibrated during training")
     recognise.add_argument("--top-k", type=int, default=5)
     recognise.add_argument("--max-regions", type=int, default=5)
     recognise.add_argument("--annotate", help="write an annotated copy here")

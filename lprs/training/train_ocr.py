@@ -16,7 +16,14 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from ..config import ARTIFACT_DIR, NUM_CLASSES, OCRConfig, PlateGeometry, PreprocessConfig
+from ..config import (
+    ARTIFACT_DIR,
+    NUM_CLASSES,
+    CropJitter,
+    OCRConfig,
+    PlateGeometry,
+    PreprocessConfig,
+)
 from ..data.datasets import CTCPlateDataset, collate_ctc
 from ..data.synth_plates import generate_identity_dataset
 from ..evaluation.metrics import evaluate_transcription
@@ -83,10 +90,7 @@ def train_ocr(
         samples_per_identity=views_per_plate,
         severity=severity,
         seed=seed,
-        # Gentler than the embedder's jitter: a crop that clips a character
-        # would hand CTC a label it cannot possibly justify.
-        jitter_shift=0.05,
-        jitter_scale=0.18,
+        jitter=CropJitter.gentle(),
     )
 
     order = list(range(len(images)))

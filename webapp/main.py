@@ -19,7 +19,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from lprs.config import ARTIFACT_DIR, MatchConfig
+from lprs.config import ARTIFACT_DIR
 from lprs.data import augment_plate, compose_scene, random_plate_text, render_plate
 from lprs.pipeline import RecognitionPipeline, build_pipeline
 
@@ -39,7 +39,9 @@ def get_pipeline(domain: str = "plate") -> RecognitionPipeline:
             domain=domain,
             embedder_kind="cnn",
             gallery_path=GALLERY_PATH if domain == "plate" else None,
-            match_config=MatchConfig(),
+            # No explicit MatchConfig: use the threshold calibrated at
+            # training time and carried inside the checkpoint.
+            match_config=None,
         )
     return _pipelines[domain]
 

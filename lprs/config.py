@@ -114,6 +114,45 @@ class PreprocessConfig:
 
 
 @dataclass(frozen=True)
+class CropJitter:
+    """Framing error to simulate during training.
+
+    These numbers are **measured, not guessed**. Running
+    ``scripts/measure_detector_error.py`` over 150 synthetic scenes gives the
+    relative error between detector boxes and ground truth::
+
+        shift_x   p5 -0.110   p50 -0.040   p95 +0.116
+        shift_y   p5 -0.276   p50 -0.168   p95 +0.269
+        scale_w   p5 -0.200   p50 +0.103   p95 +0.269
+        scale_h   p5 -0.567   p50 +0.234   p95 +0.420
+
+    The error is strongly **anisotropic**: Haar plate boxes are far sloppier
+    vertically than horizontally, and they tend to overshoot. An isotropic
+    jitter would under-cover the vertical case, which is exactly the failure
+    mode that tanked end-to-end accuracy.
+    """
+
+    shift_x: float = 0.13
+    shift_y: float = 0.28
+    scale_width: tuple[float, float] = (-0.20, 0.27)
+    scale_height: tuple[float, float] = (-0.45, 0.42)
+
+    @classmethod
+    def gentle(cls) -> "CropJitter":
+        """Milder jitter for CTC training.
+
+        A crop that clips a character hands the transcriber a label it cannot
+        possibly justify, so the aggressive shrink end is pulled back.
+        """
+        return cls(
+            shift_x=0.07,
+            shift_y=0.14,
+            scale_width=(-0.08, 0.25),
+            scale_height=(-0.12, 0.40),
+        )
+
+
+@dataclass(frozen=True)
 class EmbedderConfig:
     """FaceNet-style embedding network hyper-parameters."""
 

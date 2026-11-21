@@ -16,7 +16,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..config import ARTIFACT_DIR, MatchConfig, PlateGeometry, PreprocessConfig
+from ..config import ARTIFACT_DIR, CropJitter, MatchConfig, PlateGeometry, PreprocessConfig
 from ..data.synth_plates import (
     augment_plate,
     compose_scene,
@@ -237,7 +237,11 @@ def benchmark_ocr(
         for _ in range(num_plates):
             text = random_plate_text(rng)
             images.append(
-                jitter_crop(augment_plate(render_plate(text), rng, severity), rng, 0.05, 0.18)
+                jitter_crop(
+                    augment_plate(render_plate(text), rng, severity),
+                    rng,
+                    CropJitter.gentle(),
+                )
             )
             truths.append(text)
 

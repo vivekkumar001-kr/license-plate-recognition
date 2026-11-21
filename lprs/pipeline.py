@@ -287,9 +287,12 @@ def build_pipeline(
         device=device,
     )
 
-    # A checkpoint carries the threshold that was calibrated against it on
-    # validation data. Prefer that over the generic default, because the right
-    # cut-off is a property of the embedding space, not a universal constant.
+    # Threshold precedence, highest first:
+    #   1. an explicit MatchConfig  -- the operator chose a risk budget
+    #   2. the checkpoint's calibrated value -- measured against these weights
+    #   3. whatever was stored in the gallery file
+    # Getting this order wrong silently reverted calibration to a stale
+    # default, which is precisely the bug this comment exists to prevent.
     calibrated = getattr(embedder, "recommended_threshold", None)
     if match_config is None and calibrated is not None:
         match_config = MatchConfig(accept_threshold=float(calibrated))
@@ -302,6 +305,8 @@ def build_pipeline(
 
     if gallery_path and Path(gallery_path).exists():
         gallery = Gallery.load(gallery_path)
+        if match_config is not None:
+            gallery.config = match_config
     else:
         gallery = Gallery(match_config or MatchConfig(), strategy=gallery_strategy)
 

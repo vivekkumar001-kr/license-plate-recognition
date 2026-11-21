@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import torch
 
-from lprs.config import EmbedderConfig, MatchConfig
+from lprs.config import CropJitter, EmbedderConfig, MatchConfig
 from lprs.data import generate_identity_dataset, jitter_crop, render_plate
 from lprs.embeddings.cnn import EmbeddingNet, TorchEmbedder
 from lprs.pipeline import build_pipeline
@@ -41,7 +41,10 @@ def test_jitter_crop_produces_varied_framings(clean_plate):
 
 def test_jitter_crop_never_returns_an_empty_image():
     tiny = render_plate("AB12CD")[:20, :40]
-    result = jitter_crop(tiny, random.Random(0), max_shift=0.9, max_scale=0.9)
+    violent = CropJitter(
+        shift_x=0.9, shift_y=0.9, scale_width=(-0.9, 0.9), scale_height=(-0.9, 0.9)
+    )
+    result = jitter_crop(tiny, random.Random(0), violent)
     assert result.size > 0
 
 
@@ -49,12 +52,35 @@ def test_jitter_respects_the_requested_magnitude(clean_plate):
     """Gentle settings must stay closer to the original than aggressive ones."""
     height, width = clean_plate.shape[:2]
 
-    def mean_deviation(shift, scale):
+    def mean_deviation(jitter: CropJitter) -> float:
         rng = random.Random(9)
-        crops = [jitter_crop(clean_plate, rng, shift, scale) for _ in range(20)]
-        return np.mean([abs(crop.shape[1] - width) + abs(crop.shape[0] - height) for crop in crops])
+        crops = [jitter_crop(clean_plate, rng, jitter) for _ in range(20)]
+        return float(
+            np.mean(
+                [abs(crop.shape[1] - width) + abs(crop.shape[0] - height) for crop in crops]
+            )
+        )
 
-    assert mean_deviation(0.02, 0.04) < mean_deviation(0.15, 0.30)
+    tiny = CropJitter(
+        shift_x=0.02, shift_y=0.02, scale_width=(-0.03, 0.03), scale_height=(-0.03, 0.03)
+    )
+    assert mean_deviation(tiny) < mean_deviation(CropJitter())
+
+
+def test_gentle_jitter_is_milder_than_the_default():
+    """CTC training must not have characters cropped off."""
+    gentle, default = CropJitter.gentle(), CropJitter()
+    assert gentle.shift_x < default.shift_x
+    assert gentle.shift_y < default.shift_y
+    # The aggressive shrink end is what clips glyphs.
+    assert gentle.scale_height[0] > default.scale_height[0]
+
+
+def test_default_jitter_is_anisotropic():
+    """Measured detector error is far worse vertically; see CropJitter docs."""
+    jitter = CropJitter()
+    assert jitter.shift_y > jitter.shift_x
+    assert abs(jitter.scale_height[0]) > abs(jitter.scale_width[0])
 
 
 def test_dataset_jitter_can_be_disabled():
@@ -93,6 +119,29 @@ def test_pipeline_adopts_the_calibrated_threshold(tmp_path):
         domain="plate", embedder_kind="cnn", embedder_checkpoint=path
     )
     assert pipeline.gallery.config.accept_threshold == pytest.approx(0.77)
+
+
+def test_a_saved_gallery_does_not_override_calibration(tmp_path):
+    """Regression: loading a gallery used to silently restore a stale default."""
+    from lprs.matching import Gallery
+
+    gallery_path = tmp_path / "gallery.npz"
+    stale = Gallery(MatchConfig(accept_threshold=0.62))
+    stale.enrol("A", np.ones(16, dtype=np.float32))
+    stale.save(gallery_path)
+
+    checkpoint = tmp_path / "embedder.pt"
+    EmbeddingNet(in_channels=1, config=EmbedderConfig(embedding_dim=16)).save(
+        checkpoint, accept_threshold=0.91
+    )
+
+    pipeline = build_pipeline(
+        domain="plate",
+        embedder_kind="cnn",
+        embedder_checkpoint=checkpoint,
+        gallery_path=gallery_path,
+    )
+    assert pipeline.gallery.config.accept_threshold == pytest.approx(0.91)
 
 
 def test_explicit_match_config_overrides_the_checkpoint(tmp_path):
