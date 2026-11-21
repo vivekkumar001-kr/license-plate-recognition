@@ -24,7 +24,7 @@ from lprs.data import augment_plate, compose_scene, random_plate_text, render_pl
 from lprs.pipeline import RecognitionPipeline, build_pipeline
 
 BASE_DIR = Path(__file__).resolve().parent
-GALLERY_PATH = ARTIFACT_DIR / "gallery.npz"
+GALLERY_PATH = ARTIFACT_DIR / "gallery_plate.npz"
 
 app = FastAPI(title="License Plate Recognition System")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
@@ -112,7 +112,9 @@ async def recognise(
         )
 
     pipeline = get_pipeline(domain)
-    results = pipeline.recognise(image, max_regions=5)
+    # Use max_regions=1 so only the single best/highest-confidence plate detection
+    # is returned, filtering out false-positive detections on grilles/emblems.
+    results = pipeline.recognise(image, max_regions=1)
     return templates.TemplateResponse(
         request,
         "partials/results.html",
@@ -126,14 +128,28 @@ async def recognise(
 
 @app.post("/demo", response_class=HTMLResponse)
 def demo(request: Request, severity: float = Form(0.6)) -> HTMLResponse:
-    """Synthesise a random scene and run it through the pipeline."""
-    rng = random.Random()
-    text = random_plate_text(rng)
-    plate = augment_plate(render_plate(text), rng, severity)
-    scene, _ = compose_scene(plate, rng)
+    """Synthesise a random scene and run it through the pipeline.
 
+    The detector is imperfect (by design), so we retry a few times to avoid a
+    confusing "demo" that shows *nothing detected*.
+    """
     pipeline = get_pipeline("plate")
-    results = pipeline.recognise(scene, max_regions=5)
+
+    rng = random.Random(1337)
+    scene = None
+    text = None
+    results = []
+
+    for _ in range(6):
+        text = random_plate_text(rng)
+        plate = augment_plate(render_plate(text), rng, severity)
+        scene, _ = compose_scene(plate, rng)
+        results = pipeline.recognise(scene, max_regions=5)
+        if results:
+            break
+
+    assert scene is not None and text is not None
+
     return templates.TemplateResponse(
         request,
         "partials/results.html",

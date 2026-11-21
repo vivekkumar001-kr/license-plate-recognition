@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "httpx"]
 
 [project.scripts]
 lprs = "lprs.cli:main"
@@ -30,7 +30,10 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["lprs*"]
+include = ["lprs*", "webapp*"]
+
+[tool.setuptools.package-data]
+webapp = ["templates/**/*.html", "templates/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

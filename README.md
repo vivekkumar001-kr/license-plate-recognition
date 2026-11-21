@@ -48,10 +48,18 @@ the two rows that genuinely cannot be satisfied and why.
 
 ## Quickstart
 
+This is a personal/offline CPU project — it installs from **public PyPI** (no internal mirrors,
+no API keys).
+
 ```bash
+# Option A (recommended): uv
 uv venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[dev]"
+
+# Option B: plain pip
+# python -m venv .venv && source .venv/bin/activate
+# pip install -e ".[dev]"
 
 lprs train-embedder          # ~3 min on CPU
 lprs train-ocr               # ~12 min on CPU
@@ -74,7 +82,8 @@ Or in one shot: `python scripts/train_all.py`.
 | Command | What it does |
 |---|---|
 | `lprs synth` | Write a synthetic dataset (crops + scenes + ground-truth boxes) |
-| `lprs train-embedder` | Train the CNN embedder with batch-hard triplet loss |
+| `lprs train-embedder` | Train the CNN embedder with batch-hard triplet loss (plates, synthetic data) |
+| `lprs train-face-embedder <folder>` | Train the CNN embedder for faces from your own labelled images |
 | `lprs train-ocr` | Train the CRNN + BiLSTM + CTC transcriber |
 | `lprs enrol <folder>` | Enrol `root/<label>/*.jpg` into a gallery |
 | `lprs enrol-synthetic` | Build a demo gallery without any files |
@@ -85,9 +94,9 @@ Or in one shot: `python scripts/train_all.py`.
 
 ---
 
-## Error analysis: two bugs that only end-to-end testing could find
+## Error analysis: three bugs that only end-to-end testing could find
 
-Both of these were invisible to unit tests and to the component benchmark.
+All three were invisible to unit tests and to the component benchmark.
 They are documented here because *how* a system fails is more informative
 than its headline accuracy.
 
@@ -109,13 +118,32 @@ roughly 10-25% too large, slightly offset, with background in the corners
 
 The model had never seen an imperfectly-framed plate, so it had no reason to
 be invariant to framing. Fix: `jitter_crop` in `data/synth_plates.py`
-simulates detector box error during training (random shift and scale over
-synthesised background), and the benchmark now jitters both gallery and
-probes so it measures the deployed condition rather than a laboratory one.
+simulates detector box error during training, and the benchmark now jitters
+both gallery and probes so it measures the deployed condition rather than a
+laboratory one.
+
+The jitter magnitudes are **measured, not guessed**.
+`scripts/measure_detector_error.py` samples the real framing error over 150
+scenes (mean IoU 0.66):
+
+| Relative error | p5 | p50 | p95 |
+|---|---|---|---|
+| shift x | -0.110 | -0.040 | +0.116 |
+| shift y | **-0.276** | -0.168 | **+0.269** |
+| scale width | -0.200 | +0.103 | +0.269 |
+| scale height | **-0.567** | +0.234 | **+0.420** |
+
+The error is strongly **anisotropic** — Haar plate boxes are roughly 2.5x
+sloppier vertically than horizontally. The first fix used a single isotropic
++/-0.10 shift, which under-covered the vertical case and left most of the
+accuracy on the table. `CropJitter` in `config.py` now encodes the measured
+asymmetry, with a `gentle()` variant for CTC training where a clipped
+character is simply label noise.
 
 > The general lesson: **evaluate the pipeline, not the layer.** A component
 > benchmark that constructs its own inputs is measuring a distribution that
-> does not exist at inference time.
+> does not exist at inference time. And when you add augmentation to close
+> the gap, measure the thing you are simulating instead of guessing at it.
 
 ### 2. An uncalibrated acceptance threshold
 
@@ -127,9 +155,52 @@ than an honest `UNKNOWN`.
 Fix: `train_embedder` computes the Youden-optimal threshold on
 identity-disjoint validation data and **stores it inside the checkpoint**.
 `build_pipeline` reads it back, so the operating point can never drift away
-from the weights it was measured for. An explicit `MatchConfig` still
-overrides it, because an operator choosing a deliberate false-accept budget
-must always win.
+from the weights it was measured for.
+
+There was a second-order bug hiding behind this one: loading a *saved
+gallery* silently restored whatever threshold that file was written with,
+clobbering the calibrated value. Precedence is now explicit and tested —
+an operator's `MatchConfig` beats the checkpoint, which beats the gallery
+file — because an operator choosing a deliberate false-accept budget must
+always win.
+
+### 3. Triplet collapse (found by a contradiction, not a crash)
+
+After fixing (1) and (2), the system reported a calibrated threshold of
+**0.9907** and still produced **100% false accepts** on unenrolled plates.
+Those two facts cannot both be reasonable, which is what gave it away.
+
+Measuring the embedding space directly
+(`scripts/diagnose_embedding_space.py`) showed what happened:
+
+| Model | Genuine sim | Impostor sim | Margin | **Spread** | Top-1 |
+|---|---|---|---|---|---|
+| CNN (hard margin) | 0.9972 | 0.9678 | +0.0295 | **0.168** | 66.2% |
+| HOG | 0.6220 | 0.6170 | +0.0050 | 0.615 | 4.2% |
+| Raw pixels | 0.8903 | 0.8907 | -0.0004 | 0.328 | 0.8% |
+
+The embedding space had **collapsed**: everything sat in a tiny region with
+every cosine similarity above 0.96. Validation ROC-AUC still looked fine
+(0.9866) because AUC only measures *ranking*, and the ranking was fine. But
+no single absolute threshold can separate 0.9972 from 0.9678 reliably, so
+the open-set `UNKNOWN` behaviour was destroyed.
+
+The cause: with a **hard** hinge on a hard task, the cheapest way to reduce
+`max(0, d+ - d- + margin)` is to shrink the entire space, and batch-hard
+mining drives it straight there (`active_triplets` pinned at 1.00 — the
+margin was never achievable). The fix is the **soft margin**,
+`softplus(d+ - d-)`, which has no unreachable target and keeps rewarding
+extra separation (Hermans et al., *In Defense of the Triplet Loss*).
+
+Two lasting changes came out of this:
+
+- `embedding_spread` is now logged **every epoch**, so collapse is visible
+  while training rather than three debugging sessions later. AUC alone
+  would never have shown it.
+- The same table is the strongest baseline result in the project: under
+  realistic framing variation **HOG falls to 4.2%** while the CNN holds up.
+  On the pristine tight crops of the original benchmark HOG scored 96.9%.
+  That gap is the entire argument for learning the representation.
 
 ---
 
@@ -266,8 +337,18 @@ Two tests exist purely as regression guards for bugs found during development:
 - Haar cascades are weak at steep angles. The contour detector partly covers
   this, but a learned detector (YOLO/SSD) would be the real fix.
 - The face pipeline ships **no trained face embedder** — there is no synthetic
-  face generator, and bundling a face dataset would be a privacy problem. It
-  falls back to the HOG baseline. Train a proper one with
-  `lprs enrol`-shaped data of your own.
+  face generator, and bundling a face dataset would be a privacy problem.
+  It falls back to the HOG baseline until you train one locally.
+
+  Train one from your own labelled folder (same layout as enrolment):
+
+  ```bash
+  lprs train-face-embedder /path/to/faces
+  # expects: /path/to/faces/<person_name>/*.jpg
+  ```
+
+  This uses OpenCV Haar face detection + eye-line alignment during training by
+  default, so you can point it at uncropped photos. Use `--no-detect` if your
+  images are already tight face crops.
 - Greedy CTC decoding only. Beam search with a plate-format prior would improve
   exact-match rate.

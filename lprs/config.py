@@ -133,9 +133,13 @@ class CropJitter:
     """
 
     shift_x: float = 0.13
-    shift_y: float = 0.28
+    shift_y: float = 0.24
     scale_width: tuple[float, float] = (-0.20, 0.27)
-    scale_height: tuple[float, float] = (-0.45, 0.42)
+    # The measured p5 of -0.567 comes from the contour detector's occasional
+    # thin-strip boxes, which chop characters in half. Simulating those
+    # creates positives that are genuinely unidentifiable and that actively
+    # destabilise training, so the shrink end is clamped well short of it.
+    scale_height: tuple[float, float] = (-0.25, 0.45)
 
     @classmethod
     def gentle(cls) -> "CropJitter":
@@ -160,6 +164,16 @@ class EmbedderConfig:
     channels: tuple[int, ...] = (32, 64, 128, 256)
     dropout: float = 0.2
     triplet_margin: float = 0.3
+    #: Use softplus(d+ - d-) instead of a hard hinge.
+    #:
+    #: With a hard margin on a difficult task the cheapest way to reduce the
+    #: loss is to shrink the whole embedding space, and batch-hard mining
+    #: happily drives it there: measured spread collapsed to 0.168 with every
+    #: cosine similarity above 0.96, which makes any absolute threshold
+    #: useless even though the *ranking* stayed good. The soft margin has no
+    #: unreachable target and keeps rewarding extra separation, so the space
+    #: stays spread out (Hermans et al., "In Defense of the Triplet Loss").
+    soft_margin: bool = True
     learning_rate: float = 1e-3
     weight_decay: float = 1e-4
     batch_size: int = 64

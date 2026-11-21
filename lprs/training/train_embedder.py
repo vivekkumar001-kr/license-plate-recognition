@@ -25,7 +25,21 @@ from ..evaluation.metrics import build_pairs, evaluate_verification
 from ..preprocess import Preprocessor
 from .triplet import BatchHardTripletLoss
 
-__all__ = ["EmbedderTrainingResult", "train_embedder"]
+__all__ = ["EmbedderTrainingResult", "train_embedder", "embedding_spread"]
+
+
+def embedding_spread(embeddings: np.ndarray) -> float:
+    """Mean distance of embeddings from their centroid.
+
+    A collapse detector. Triplet loss can minimise itself by squashing the
+    whole space into a point, which leaves ranking intact but makes every
+    cosine similarity ~1.0 and any absolute threshold meaningless. Healthy
+    unit-norm embeddings spread around 0.7-1.0; below ~0.3 is collapse.
+    """
+    if len(embeddings) == 0:
+        return 0.0
+    centroid = np.asarray(embeddings, dtype=np.float32).mean(axis=0)
+    return float(np.linalg.norm(embeddings - centroid, axis=1).mean())
 
 
 @dataclass
@@ -131,7 +145,9 @@ def train_embedder(
     loader = DataLoader(train_set, batch_size=sampler.batch_size, sampler=sampler)
 
     model = EmbeddingNet(in_channels=train_set.channels, config=config).to(torch_device)
-    criterion = BatchHardTripletLoss(margin=config.triplet_margin)
+    criterion = BatchHardTripletLoss(
+        margin=config.triplet_margin, soft=config.soft_margin
+    )
     optimiser = torch.optim.AdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
@@ -159,6 +175,7 @@ def train_embedder(
         validation_embeddings = _embed_all(model, val_set, torch_device)
         similarities, is_same = build_pairs(validation_embeddings, val_labels, seed=seed)
         verification = evaluate_verification(similarities, is_same)
+        spread = embedding_spread(validation_embeddings)
 
         row = {
             "epoch": epoch,
@@ -166,6 +183,7 @@ def train_embedder(
             "active_triplets": float(np.mean([s["active"] for s in epoch_stats])),
             "mean_positive_distance": float(np.mean([s["pos"] for s in epoch_stats])),
             "mean_negative_distance": float(np.mean([s["neg"] for s in epoch_stats])),
+            "embedding_spread": spread,
             "val_roc_auc": verification.roc_auc,
             "val_eer": verification.equal_error_rate,
             "val_best_threshold": verification.best_threshold,
@@ -179,6 +197,7 @@ def train_embedder(
                 f"| active {row['active_triplets']:.2f} "
                 f"| d+ {row['mean_positive_distance']:.3f} "
                 f"| d- {row['mean_negative_distance']:.3f} "
+                f"| spread {spread:.3f} "
                 f"| val AUC {row['val_roc_auc']:.4f} | EER {row['val_eer']:.4f}"
             )
 
@@ -191,6 +210,7 @@ def train_embedder(
     result.final_metrics = {
         "best_val_roc_auc": best_auc,
         "recommended_accept_threshold": result.best_epoch().get("val_best_threshold", 0.6),
+        "final_embedding_spread": result.history[-1]["embedding_spread"] if result.history else 0.0,
         "epochs": epochs,
         "train_identities": train_set.num_classes,
         "val_identities": val_set.num_classes,

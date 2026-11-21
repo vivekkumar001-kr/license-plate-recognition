@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .train_embedder import EmbedderTrainingResult, train_embedder
+from .train_face_embedder import train_face_embedder
 from .train_ocr import OCRTrainingResult, train_ocr
 from .triplet import BatchHardTripletLoss, pairwise_distances
 
@@ -12,5 +13,6 @@ __all__ = [
     "OCRTrainingResult",
     "pairwise_distances",
     "train_embedder",
+    "train_face_embedder",
     "train_ocr",
 ]

@@ -16,6 +16,7 @@ from lprs.config import CropJitter, EmbedderConfig, MatchConfig
 from lprs.data import generate_identity_dataset, jitter_crop, render_plate
 from lprs.embeddings.cnn import EmbeddingNet, TorchEmbedder
 from lprs.pipeline import build_pipeline
+from lprs.training.train_embedder import embedding_spread
 
 
 # -- jitter ----------------------------------------------------------------
@@ -165,6 +166,55 @@ def test_embedding_net_output_is_unit_norm():
     with torch.no_grad():
         vectors = model(torch.randn(5, 1, 48, 160))
     assert torch.allclose(vectors.norm(dim=1), torch.ones(5), atol=1e-5)
+
+
+# -- collapse detection ----------------------------------------------------
+
+
+def test_spread_is_zero_for_a_collapsed_space():
+    collapsed = np.tile(np.array([1.0, 0.0, 0.0], dtype=np.float32), (10, 1))
+    assert embedding_spread(collapsed) == pytest.approx(0.0, abs=1e-6)
+
+
+def test_spread_is_large_for_a_well_separated_space():
+    spread_out = np.eye(10, 16, dtype=np.float32)
+    assert embedding_spread(spread_out) > 0.7
+
+
+def test_spread_orders_two_spaces_correctly():
+    rng = np.random.default_rng(0)
+    base = rng.normal(size=(40, 8)).astype(np.float32)
+    tight = base * 0.01
+    assert embedding_spread(tight) < embedding_spread(base)
+
+
+def test_spread_of_nothing_is_zero():
+    assert embedding_spread(np.zeros((0, 8), dtype=np.float32)) == 0.0
+
+
+def test_soft_margin_is_the_default():
+    """Hard-margin batch-hard collapsed the space; see EmbedderConfig docs."""
+    assert EmbedderConfig().soft_margin is True
+
+
+def test_soft_margin_keeps_rewarding_extra_separation():
+    """A hard hinge goes flat past the margin; softplus never does."""
+    from lprs.training.triplet import BatchHardTripletLoss
+
+    labels = torch.tensor([0, 0, 1, 1])
+    near = torch.tensor(
+        [[1.0, 0.0], [0.94, 0.34], [-1.0, 0.0], [-0.94, 0.34]], dtype=torch.float32
+    )
+    far = torch.tensor(
+        [[1.0, 0.0], [0.999, 0.044], [-1.0, 0.0], [-0.999, 0.044]], dtype=torch.float32
+    )
+
+    soft = BatchHardTripletLoss(soft=True)
+    assert float(soft(far, labels)[0]) < float(soft(near, labels)[0])
+
+    hard = BatchHardTripletLoss(margin=0.3, soft=False)
+    assert float(hard(far, labels)[0]) == pytest.approx(0.0, abs=1e-6)
+    assert float(hard(near, labels)[0]) == pytest.approx(0.0, abs=1e-6)
 
 
 # -- preprocessing cache ---------------------------------------------------

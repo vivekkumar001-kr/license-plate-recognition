@@ -32,7 +32,7 @@ from .config import (
 )
 from .detectors import Detection, Detector, build_detector
 from .embeddings import Embedder, build_embedder
-from .matching import Gallery, MatchResult, text_similarity
+from .matching import Gallery, MatchResult, UNKNOWN_LABEL, text_similarity
 from .ocr import PlateTranscriber
 from .preprocess import Preprocessor
 
@@ -54,9 +54,22 @@ class RecognitionResult:
         return self.candidates[0] if self.candidates else None
 
     @property
-    def label(self) -> str:
+    def accepted(self) -> bool:
         best = self.best
-        return best.label if best else "UNKNOWN"
+        return best is not None and best.accepted
+
+    @property
+    def label(self) -> str:
+        """The identity, or ``UNKNOWN`` when nothing cleared the threshold.
+
+        Returning the nearest neighbour regardless of its score would throw
+        away the entire open-set guarantee that ``Gallery`` works to provide
+        -- a stranger would always be confidently named as somebody.
+        """
+        best = self.best
+        if best is None or not best.accepted:
+            return UNKNOWN_LABEL
+        return best.label
 
     def as_dict(self) -> dict:
         return {
@@ -64,6 +77,7 @@ class RecognitionResult:
             "detector": self.detection.source,
             "detection_score": round(float(self.detection.score), 4),
             "label": self.label,
+            "accepted": self.accepted,
             "text": self.text,
             "text_confidence": (
                 round(self.text_confidence, 4) if self.text_confidence is not None else None

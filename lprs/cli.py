@@ -34,6 +34,12 @@ def _print_json(payload) -> None:
     print(json.dumps(payload, indent=2, default=str))
 
 
+def _default_gallery_path(domain: str) -> str:
+    """Avoid mixing plate and face embeddings in the same gallery file."""
+    suffix = "face" if domain == "face" else "plate"
+    return str(ARTIFACT_DIR / f"gallery_{suffix}.npz")
+
+
 def _match_config(args: argparse.Namespace) -> MatchConfig | None:
     """Build a MatchConfig only when the user actually asked for a threshold.
 
@@ -95,6 +101,21 @@ def command_train_embedder(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_train_face_embedder(args: argparse.Namespace) -> int:
+    """Train a face embedder from a labelled image folder."""
+    from .training import train_face_embedder
+
+    result = train_face_embedder(
+        source=args.source,
+        epochs=args.epochs,
+        device=args.device,
+        detect_first=not args.no_detect,
+        min_samples_per_label=args.min_samples,
+    )
+    _print_json(result.final_metrics)
+    return 0
+
+
 def command_train_ocr(args: argparse.Namespace) -> int:
     from .training import train_ocr
 
@@ -111,19 +132,22 @@ def command_train_ocr(args: argparse.Namespace) -> int:
 
 def command_enrol(args: argparse.Namespace) -> int:
     """Enrol an image folder (``root/<label>/*.jpg``) into a gallery."""
+    gallery_path = args.gallery or _default_gallery_path(args.domain)
     pipeline = build_pipeline(
         domain=args.domain,
         embedder_kind=args.embedder,
-        gallery_path=args.gallery if args.append else None,
+        gallery_path=gallery_path if args.append else None,
         match_config=_match_config(args),
     )
     images, labels = load_image_folder(args.source)
     accepted = pipeline.enrol_batch(labels, images, detect_first=args.detect)
-    pipeline.gallery.save(args.gallery)
+    pipeline.gallery.save(gallery_path)
 
     print(f"enrolled {accepted}/{len(images)} images")
-    print(f"gallery now holds {len(pipeline.gallery)} samples "
-          f"across {len(pipeline.gallery.labels)} identities -> {args.gallery}")
+    print(
+        f"gallery now holds {len(pipeline.gallery)} samples "
+        f"across {len(pipeline.gallery.labels)} identities -> {gallery_path}"
+    )
     return 0 if accepted else 1
 
 
@@ -148,10 +172,11 @@ def command_enrol_synthetic(args: argparse.Namespace) -> int:
 
 
 def command_recognise(args: argparse.Namespace) -> int:
+    gallery_path = args.gallery or _default_gallery_path(args.domain)
     pipeline = build_pipeline(
         domain=args.domain,
         embedder_kind=args.embedder,
-        gallery_path=args.gallery,
+        gallery_path=gallery_path,
         match_config=_match_config(args),
     )
     image = load_image(args.image)
@@ -289,6 +314,26 @@ def build_parser() -> argparse.ArgumentParser:
     train_emb.add_argument("--device", default="cpu")
     train_emb.set_defaults(handler=command_train_embedder)
 
+    train_face_emb = subparsers.add_parser(
+        "train-face-embedder",
+        help="train the face CNN embedder from a labelled image folder",
+    )
+    train_face_emb.add_argument("source", help="root/<person_name>/*.jpg")
+    train_face_emb.add_argument("--epochs", type=int, default=16)
+    train_face_emb.add_argument("--device", default="cpu")
+    train_face_emb.add_argument(
+        "--no-detect",
+        action="store_true",
+        help="treat images as already-cropped faces (skip OpenCV face detection)",
+    )
+    train_face_emb.add_argument(
+        "--min-samples",
+        type=int,
+        default=2,
+        help="skip identities with fewer than this many images",
+    )
+    train_face_emb.set_defaults(handler=command_train_face_embedder)
+
     train_ocr_parser = subparsers.add_parser("train-ocr", help="train the CRNN/CTC head")
     train_ocr_parser.add_argument("--plates", type=int, default=2400)
     train_ocr_parser.add_argument("--views", type=int, default=2)
@@ -301,7 +346,11 @@ def build_parser() -> argparse.ArgumentParser:
     enrol.add_argument("source", help="root/<label>/*.jpg")
     enrol.add_argument("--domain", choices=("plate", "face"), default="plate")
     enrol.add_argument("--embedder", choices=("cnn", "hog", "raw"), default="cnn")
-    enrol.add_argument("--gallery", default=str(ARTIFACT_DIR / "gallery.npz"))
+    enrol.add_argument(
+        "--gallery",
+        default=None,
+        help="gallery file (default: artifacts/gallery_plate.npz or gallery_face.npz)",
+    )
     enrol.add_argument("--threshold", type=float, default=None,
                        help="override the threshold calibrated during training")
     enrol.add_argument("--detect", action="store_true", help="detect before enrolling")
@@ -314,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--identities", type=int, default=40)
     demo.add_argument("--samples", type=int, default=5)
     demo.add_argument("--embedder", choices=("cnn", "hog", "raw"), default="cnn")
-    demo.add_argument("--gallery", default=str(ARTIFACT_DIR / "gallery.npz"))
+    demo.add_argument("--gallery", default=str(ARTIFACT_DIR / "gallery_plate.npz"))
     demo.add_argument("--threshold", type=float, default=None,
                       help="override the threshold calibrated during training")
     demo.add_argument("--seed", type=int, default=99)
@@ -324,7 +373,11 @@ def build_parser() -> argparse.ArgumentParser:
     recognise.add_argument("image")
     recognise.add_argument("--domain", choices=("plate", "face"), default="plate")
     recognise.add_argument("--embedder", choices=("cnn", "hog", "raw"), default="cnn")
-    recognise.add_argument("--gallery", default=str(ARTIFACT_DIR / "gallery.npz"))
+    recognise.add_argument(
+        "--gallery",
+        default=None,
+        help="gallery file (default: artifacts/gallery_plate.npz or gallery_face.npz)",
+    )
     recognise.add_argument("--threshold", type=float, default=None,
                            help="override the threshold calibrated during training")
     recognise.add_argument("--top-k", type=int, default=5)
